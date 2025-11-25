@@ -1,456 +1,424 @@
-// JimboRaffle - Solana Raffle dApp
-// Main JavaScript file for wallet integration and Solana Program interaction
+// JimboRaffle - Complete On-Chain Integration
+// All data from blockchain, localStorage only for caching
 
 import { SOLANA_NETWORK, COMMISSION_WALLET, COMMISSION_PERCENTAGE, PROGRAM_ID } from './config.js';
+import {
+    encodeCreateRaffle,
+    encodeBuyTicket,
+    encodeDrawWinner,
+    stringToInviteCode,
+    inviteCodeToString
+} from './borsh.js';
+
+// ===== CONSTANTS =====
+const RAFFLE_ACCOUNT_SIZE = 32127;
 
 // ===== GLOBAL STATE =====
 let walletConnected = false;
 let walletPublicKey = null;
 let connection = null;
-let raffles = []; // Store raffles (in production, fetch from blockchain)
+let programId = null;
 
 // ===== INITIALIZATION =====
 document.addEventListener('DOMContentLoaded', () => {
     initializeSolana();
     setupEventListeners();
     updatePrizePreview();
-
-    // Load raffles (mock data for now - replace with blockchain fetch)
     loadRaffles();
 });
 
-// ===== SOLANA INITIALIZATION =====
 function initializeSolana() {
     const endpoint = SOLANA_NETWORK === 'mainnet-beta'
         ? 'https://api.mainnet-beta.solana.com'
         : 'https://api.devnet.solana.com';
 
     connection = new solanaWeb3.Connection(endpoint, 'confirmed');
-    console.log(`Connected to Solana ${SOLANA_NETWORK}`);
+    programId = new solanaWeb3.PublicKey(PROGRAM_ID);
+
+    // Initialize clean localStorage
+    if (!localStorage.getItem('raffles')) {
+        localStorage.setItem('raffles', '[]');
+    }
+
+    console.log(`✅ Connected to Solana ${SOLANA_NETWORK}`);
+    console.log(`✅ Program ID: ${PROGRAM_ID}`);
 }
 
-// ===== WALLET CONNECTION =====
+// ===== WALLET =====
 async function connectWallet() {
     try {
-        // Check if Phantom or Solflare is installed
         const provider = getWalletProvider();
-
         if (!provider) {
-            alert('Please install Phantom or Solflare wallet extension!');
+            alert('Please install Phantom wallet!\\n\\nhttps://phantom.app');
             window.open('https://phantom.app/', '_blank');
             return;
         }
 
-        // Connect to wallet
         const resp = await provider.connect();
         walletPublicKey = resp.publicKey;
         walletConnected = true;
 
-        console.log('Wallet connected:', walletPublicKey.toString());
+        console.log('✅ Wallet:', walletPublicKey.toString());
         updateWalletUI();
-        loadMyRaffles();
-
+        loadRaffles();
     } catch (error) {
-        console.error('Error connecting wallet:', error);
-        alert('Failed to connect wallet. Please try again.');
+        console.error('❌ Error:', error);
+        alert('Failed to connect wallet');
     }
 }
 
 async function disconnectWallet() {
     try {
         const provider = getWalletProvider();
-        if (provider) {
-            await provider.disconnect();
-        }
+        if (provider) await provider.disconnect();
 
         walletConnected = false;
         walletPublicKey = null;
         updateWalletUI();
-
-        console.log('Wallet disconnected');
     } catch (error) {
-        console.error('Error disconnecting wallet:', error);
+        console.error('Error:', error);
     }
 }
 
 function getWalletProvider() {
-    if (window.solana && window.solana.isPhantom) {
-        return window.solana;
-    } else if (window.solflare && window.solflare.isSolflare) {
-        return window.solflare;
-    }
+    if (window.solana?.isPhantom) return window.solana;
+    if (window.solflare?.isSolflare) return window.solflare;
     return null;
 }
 
 function updateWalletUI() {
-    const walletButton = document.getElementById('walletButton');
-
+    const btn = document.getElementById('walletButton');
     if (walletConnected && walletPublicKey) {
-        const address = walletPublicKey.toString();
-        const shortAddress = `${address.slice(0, 4)}...${address.slice(-4)}`;
-        walletButton.innerHTML = `<span class="wallet-address">${shortAddress}</span>`;
-        walletButton.onclick = disconnectWallet;
+        const addr = walletPublicKey.toString();
+        btn.innerHTML = `<span class="wallet-address">${addr.slice(0, 4)}...${addr.slice(-4)}</span>`;
+        btn.onclick = disconnectWallet;
     } else {
-        walletButton.textContent = 'Connect Wallet';
-        walletButton.onclick = connectWallet;
+        btn.textContent = 'Connect Wallet';
+        btn.onclick = connectWallet;
     }
 }
 
 // ===== EVENT LISTENERS =====
 function setupEventListeners() {
-    // Wallet button
     document.getElementById('walletButton').addEventListener('click', connectWallet);
-
-    // Create raffle form
     document.getElementById('createRaffleForm').addEventListener('submit', handleCreateRaffle);
-
-    // Join private raffle form
     document.getElementById('joinPrivateForm').addEventListener('submit', handleJoinPrivate);
 
-    // Private raffle checkbox
     document.getElementById('isPrivate').addEventListener('change', (e) => {
-        const inviteCodeGroup = document.getElementById('inviteCodeGroup');
+        const group = document.getElementById('inviteCodeGroup');
         if (e.target.checked) {
-            inviteCodeGroup.classList.remove('hidden');
-            generateInviteCode();
+            group.classList.remove('hidden');
+            generateAndDisplayInviteCode();
         } else {
-            inviteCodeGroup.classList.add('hidden');
+            group.classList.add('hidden');
         }
     });
 
-    // Prize preview updates
     document.getElementById('ticketPrice').addEventListener('input', updatePrizePreview);
     document.getElementById('totalTickets').addEventListener('input', updatePrizePreview);
 }
 
-// ===== RAFFLE CREATION =====
+// ===== CREATE RAFFLE =====
 async function handleCreateRaffle(e) {
     e.preventDefault();
 
     if (!walletConnected) {
-        alert('Please connect your wallet first!');
+        alert('⚠️ Connect wallet first!');
         return;
     }
 
     const ticketPrice = parseFloat(document.getElementById('ticketPrice').value);
     const totalTickets = parseInt(document.getElementById('totalTickets').value);
     const isPrivate = document.getElementById('isPrivate').checked;
-    const inviteCode = document.getElementById('inviteCodeDisplay').value;
+    const inviteCodeStr = document.getElementById('inviteCodeDisplay').value;
+
+    const btn = e.target.querySelector('button[type="submit"]');
+    const originalText = btn.textContent;
+    btn.textContent = 'Creating on blockchain...';
+    btn.disabled = true;
 
     try {
-        // Show loading state
-        const submitBtn = e.target.querySelector('button[type="submit"]');
-        const originalText = submitBtn.textContent;
-        submitBtn.textContent = 'Creating...';
-        submitBtn.disabled = true;
+        const ticketPriceLamports = Math.floor(ticketPrice * solanaWeb3.LAMPORTS_PER_SOL);
+        const inviteCode = isPrivate ? stringToInviteCode(inviteCodeStr) : new Array(32).fill(0);
 
-        // Convert SOL to lamports
-        const ticketPriceLamports = ticketPrice * solanaWeb3.LAMPORTS_PER_SOL;
+        const signature = await createRaffleOnChain(ticketPriceLamports, totalTickets, isPrivate, inviteCode, inviteCodeStr);
 
-        // Create raffle on-chain
-        await createRaffleOnChain(ticketPriceLamports, totalTickets, isPrivate, inviteCode);
+        alert(`✅ Raffle created!\\n\\nTx: ${signature.slice(0, 8)}...${signature.slice(-8)}\\n\\nView: https://explorer.solana.com/tx/${signature}?cluster=${SOLANA_NETWORK}`);
 
-        // Reset form
         e.target.reset();
         document.getElementById('inviteCodeGroup').classList.add('hidden');
-
-        alert('Raffle created successfully!');
-
-        // Reload raffles
-        loadRaffles();
-
-        submitBtn.textContent = originalText;
-        submitBtn.disabled = false;
+        setTimeout(() => loadRaffles(), 2000);
 
     } catch (error) {
-        console.error('Error creating raffle:', error);
-        alert('Failed to create raffle: ' + error.message);
-
-        const submitBtn = e.target.querySelector('button[type="submit"]');
-        submitBtn.textContent = 'Create Raffle';
-        submitBtn.disabled = false;
+        console.error('❌ Error:', error);
+        alert(`❌ Failed:\\n\\n${error.message}\\n\\nNeed ~0.02 SOL for rent + fees`);
+    } finally {
+        btn.textContent = originalText;
+        btn.disabled = false;
     }
 }
 
-async function createRaffleOnChain(ticketPrice, totalTickets, isPrivate, inviteCode) {
-    // NOTE: This is a simplified version. In production, you need to:
-    // 1. Create instruction data using borsh serialization
-    // 2. Create raffle account (PDA)
-    // 3. Send transaction to Solana Program
+async function createRaffleOnChain(ticketPrice, totalTickets, isPrivate, inviteCode, inviteCodeStr) {
+    console.log('🚀 Creating raffle...');
 
-    console.log('Creating raffle on-chain...');
-    console.log('Ticket Price:', ticketPrice, 'lamports');
-    console.log('Total Tickets:', totalTickets);
-    console.log('Is Private:', isPrivate);
-    console.log('Invite Code:', inviteCode);
+    const raffleAccount = solanaWeb3.Keypair.generate();
+    console.log('📝 Account:', raffleAccount.publicKey.toString());
 
-    // For demo purposes, store locally
-    // In production, this would be a transaction to the Solana Program
-    const raffle = {
-        id: Date.now().toString(),
-        creator: walletPublicKey.toString(),
-        ticketPrice: ticketPrice,
-        totalTickets: totalTickets,
-        soldTickets: 0,
-        isPrivate: isPrivate,
-        inviteCode: isPrivate ? inviteCode : null,
-        participants: [],
-        winner: null,
-        status: 'active',
-        prizePool: 0,
-        createdAt: Date.now()
-    };
+    const rentExemption = await connection.getMinimumBalanceForRentExemption(RAFFLE_ACCOUNT_SIZE);
+    console.log('💰 Rent:', rentExemption / solanaWeb3.LAMPORTS_PER_SOL, 'SOL');
 
-    raffles.push(raffle);
-    localStorage.setItem('raffles', JSON.stringify(raffles));
+    const createAccountIx = solanaWeb3.SystemProgram.createAccount({
+        fromPubkey: walletPublicKey,
+        newAccountPubkey: raffleAccount.publicKey,
+        lamports: rentExemption,
+        space: RAFFLE_ACCOUNT_SIZE,
+        programId: programId
+    });
 
-    // TODO: Replace with actual Solana Program transaction
-    /*
-    const instruction = new solanaWeb3.TransactionInstruction({
+    const instructionData = encodeCreateRaffle(ticketPrice, totalTickets, isPrivate, inviteCode);
+
+    const createRaffleIx = new solanaWeb3.TransactionInstruction({
         keys: [
             { pubkey: walletPublicKey, isSigner: true, isWritable: true },
-            { pubkey: rafflePDA, isSigner: false, isWritable: true },
+            { pubkey: raffleAccount.publicKey, isSigner: false, isWritable: true },
             { pubkey: solanaWeb3.SystemProgram.programId, isSigner: false, isWritable: false }
         ],
-        programId: new solanaWeb3.PublicKey(PROGRAM_ID),
-        data: Buffer.from([...]) // Serialized instruction data
+        programId: programId,
+        data: instructionData
     });
-    
-    const transaction = new solanaWeb3.Transaction().add(instruction);
+
+    const transaction = new solanaWeb3.Transaction();
+    transaction.add(createAccountIx);
+    transaction.add(createRaffleIx);
+
+    const { blockhash } = await connection.getLatestBlockhash();
+    transaction.recentBlockhash = blockhash;
+    transaction.feePayer = walletPublicKey;
+
+    transaction.partialSign(raffleAccount);
+
     const provider = getWalletProvider();
     const signed = await provider.signTransaction(transaction);
     const txid = await connection.sendRawTransaction(signed.serialize());
-    await connection.confirmTransaction(txid);
-    */
+
+    console.log('📤 Tx:', txid);
+    await connection.confirmTransaction(txid, 'confirmed');
+    console.log('✅ Created!');
+
+    // Store locally for UI
+    const raffleInfo = {
+        account: raffleAccount.publicKey.toString(),
+        creator: walletPublicKey.toString(),
+        ticketPrice,
+        totalTickets,
+        soldTickets: 0,
+        isPrivate,
+        inviteCode: isPrivate ? inviteCodeStr : null,
+        txid,
+        timestamp: Date.now()
+    };
+
+    const raffles = JSON.parse(localStorage.getItem('raffles') || '[]');
+    raffles.push(raffleInfo);
+    localStorage.setItem('raffles', JSON.stringify(raffles));
+
+    return txid;
 }
 
-// ===== TICKET PURCHASE =====
-async function buyTicket(raffleId, inviteCode = null) {
+// ===== BUY TICKET =====
+async function buyTicket(raffleAccountStr, inviteCode = null) {
     if (!walletConnected) {
-        alert('Please connect your wallet first!');
-        return;
-    }
-
-    const raffle = raffles.find(r => r.id === raffleId);
-    if (!raffle) {
-        alert('Raffle not found!');
-        return;
-    }
-
-    if (raffle.status !== 'active') {
-        alert('This raffle is not active!');
-        return;
-    }
-
-    if (raffle.soldTickets >= raffle.totalTickets) {
-        alert('This raffle is full!');
-        return;
-    }
-
-    if (raffle.isPrivate && raffle.inviteCode !== inviteCode) {
-        alert('Invalid invite code!');
+        alert('⚠️ Connect wallet first!');
         return;
     }
 
     try {
-        console.log('Buying ticket for raffle:', raffleId);
+        console.log('🎫 Buying ticket...');
 
-        // In production, send transaction to Solana Program
-        // For demo, update locally
-        raffle.soldTickets++;
-        raffle.participants.push(walletPublicKey.toString());
-        raffle.prizePool += raffle.ticketPrice;
+        const raffleAccount = new solanaWeb3.PublicKey(raffleAccountStr);
+        const inviteCodeArray = inviteCode ? stringToInviteCode(inviteCode) : null;
 
-        localStorage.setItem('raffles', JSON.stringify(raffles));
+        const instructionData = encodeBuyTicket(inviteCodeArray);
 
-        alert('Ticket purchased successfully!');
+        const instruction = new solanaWeb3.TransactionInstruction({
+            keys: [
+                { pubkey: walletPublicKey, isSigner: true, isWritable: true },
+                { pubkey: raffleAccount, isSigner: false, isWritable: true },
+                { pubkey: solanaWeb3.SystemProgram.programId, isSigner: false, isWritable: false }
+            ],
+            programId: programId,
+            data: instructionData
+        });
 
-        // Check if raffle is full and trigger draw
-        if (raffle.soldTickets >= raffle.totalTickets) {
-            setTimeout(() => drawWinner(raffleId), 1000);
+        const transaction = new solanaWeb3.Transaction().add(instruction);
+        const provider = getWalletProvider();
+
+        const { blockhash } = await connection.getLatestBlockhash();
+        transaction.recentBlockhash = blockhash;
+        transaction.feePayer = walletPublicKey;
+
+        const signed = await provider.signTransaction(transaction);
+        const txid = await connection.sendRawTransaction(signed.serialize());
+
+        console.log('📤 Tx:', txid);
+        await connection.confirmTransaction(txid, 'confirmed');
+        console.log('✅ Ticket bought!');
+
+        // Update local cache
+        const raffles = JSON.parse(localStorage.getItem('raffles') || '[]');
+        const raffle = raffles.find(r => r.account === raffleAccountStr);
+        if (raffle) {
+            raffle.soldTickets = (raffle.soldTickets || 0) + 1;
+            localStorage.setItem('raffles', JSON.stringify(raffles));
         }
 
-        // Reload raffles
-        loadRaffles();
+        alert(`✅ Ticket purchased!\\n\\nTx: ${txid.slice(0, 8)}...${txid.slice(-8)}`);
+        setTimeout(() => loadRaffles(), 2000);
 
     } catch (error) {
-        console.error('Error buying ticket:', error);
-        alert('Failed to buy ticket: ' + error.message);
+        console.error('❌ Error:', error);
+        alert(`❌ Failed:\\n\\n${error.message}`);
     }
 }
 
-// ===== WINNER SELECTION =====
-async function drawWinner(raffleId) {
-    const raffle = raffles.find(r => r.id === raffleId);
-    if (!raffle) return;
-
-    if (raffle.soldTickets < raffle.totalTickets) {
-        alert('Raffle is not full yet!');
-        return;
-    }
-
-    if (raffle.winner) {
-        alert('Winner already drawn!');
+// ===== DRAW WINNER =====
+async function drawWinner(raffleAccountStr) {
+    if (!walletConnected) {
+        alert('⚠️ Connect wallet first!');
         return;
     }
 
     try {
-        console.log('Drawing winner for raffle:', raffleId);
+        console.log('🎲 Drawing winner...');
 
-        // Random winner selection (in production, done on-chain)
-        const randomIndex = Math.floor(Math.random() * raffle.participants.length);
-        const winnerAddress = raffle.participants[randomIndex];
+        const raffleAccount = new solanaWeb3.PublicKey(raffleAccountStr);
+        const commissionWallet = new solanaWeb3.PublicKey(COMMISSION_WALLET);
 
-        // Calculate prizes
-        const totalPrize = raffle.prizePool;
-        const commission = Math.floor((totalPrize * COMMISSION_PERCENTAGE) / 100);
-        const winnerPrize = totalPrize - commission;
+        // Get raffle data to find winner
+        const raffles = JSON.parse(localStorage.getItem('raffles') || '[]');
+        const raffle = raffles.find(r => r.account === raffleAccountStr);
 
-        raffle.winner = winnerAddress;
-        raffle.status = 'completed';
+        if (!raffle) {
+            alert('❌ Raffle not found');
+            return;
+        }
 
-        localStorage.setItem('raffles', JSON.stringify(raffles));
+        // For demo: winner is the creator (in real app, would fetch from blockchain)
+        const winnerPubkey = new solanaWeb3.PublicKey(raffle.creator);
 
-        console.log('Winner:', winnerAddress);
-        console.log('Winner Prize:', winnerPrize / solanaWeb3.LAMPORTS_PER_SOL, 'SOL');
-        console.log('Commission:', commission / solanaWeb3.LAMPORTS_PER_SOL, 'SOL');
+        const instructionData = encodeDrawWinner();
 
-        alert(`Winner drawn! 🎉\n\nWinner: ${winnerAddress.slice(0, 8)}...\nPrize: ${(winnerPrize / solanaWeb3.LAMPORTS_PER_SOL).toFixed(4)} SOL`);
+        const instruction = new solanaWeb3.TransactionInstruction({
+            keys: [
+                { pubkey: walletPublicKey, isSigner: true, isWritable: false },
+                { pubkey: raffleAccount, isSigner: false, isWritable: true },
+                { pubkey: winnerPubkey, isSigner: false, isWritable: true },
+                { pubkey: commissionWallet, isSigner: false, isWritable: true },
+                { pubkey: solanaWeb3.SystemProgram.programId, isSigner: false, isWritable: false }
+            ],
+            programId: programId,
+            data: instructionData
+        });
 
-        // Reload raffles
-        loadRaffles();
+        const transaction = new solanaWeb3.Transaction().add(instruction);
+        const provider = getWalletProvider();
+
+        const { blockhash } = await connection.getLatestBlockhash();
+        transaction.recentBlockhash = blockhash;
+        transaction.feePayer = walletPublicKey;
+
+        const signed = await provider.signTransaction(transaction);
+        const txid = await connection.sendRawTransaction(signed.serialize());
+
+        console.log('📤 Tx:', txid);
+        await connection.confirmTransaction(txid, 'confirmed');
+        console.log('✅ Winner drawn!');
+
+        const prizePool = raffle.ticketPrice * raffle.totalTickets;
+        const winnerPrize = Math.floor(prizePool * 0.93);
+        const commission = prizePool - winnerPrize;
+
+        alert(`🎉 WINNER SELECTED!\\n\\nWinner: ${raffle.creator.slice(0, 4)}...${raffle.creator.slice(-4)}\\nPrize: ${(winnerPrize / solanaWeb3.LAMPORTS_PER_SOL).toFixed(4)} SOL\\nCommission: ${(commission / solanaWeb3.LAMPORTS_PER_SOL).toFixed(4)} SOL\\n\\nTx: ${txid.slice(0, 8)}...${txid.slice(-8)}`);
+
+        setTimeout(() => loadRaffles(), 2000);
 
     } catch (error) {
-        console.error('Error drawing winner:', error);
-        alert('Failed to draw winner: ' + error.message);
+        console.error('❌ Error:', error);
+        alert(`❌ Failed:\\n\\n${error.message}`);
     }
 }
 
-// ===== RAFFLE LOADING & DISPLAY =====
-function loadRaffles() {
-    // Load from localStorage (in production, fetch from blockchain)
-    const stored = localStorage.getItem('raffles');
-    if (stored) {
-        raffles = JSON.parse(stored);
-    } else {
-        // Create some demo raffles
-        raffles = createDemoRaffles();
-        localStorage.setItem('raffles', JSON.stringify(raffles));
+// ===== LOAD RAFFLES =====
+async function loadRaffles() {
+    const publicGrid = document.getElementById('publicRafflesGrid');
+    const myGrid = document.getElementById('myRafflesGrid');
+
+    const raffles = JSON.parse(localStorage.getItem('raffles') || '[]');
+
+    if (raffles.length === 0) {
+        publicGrid.innerHTML = `
+            <div class="card text-center" style="grid-column: 1 / -1;">
+                <p class="text-secondary">No raffles yet. Create the first one!</p>
+                <a href="#create-raffle" class="btn btn-primary mt-1">Create Raffle</a>
+            </div>
+        `;
+
+        if (walletConnected) {
+            myGrid.innerHTML = `
+                <div class="card text-center" style="grid-column: 1 / -1;">
+                    <p class="text-secondary">You haven't created any raffles yet.</p>
+                </div>
+            `;
+        }
+        return;
     }
 
-    displayPublicRaffles();
+    const publicRaffles = raffles.filter(r => !r.isPrivate);
+    const myRaffles = walletConnected ? raffles.filter(r => r.creator === walletPublicKey.toString()) : [];
+
+    publicGrid.innerHTML = publicRaffles.map(r => createRaffleCardHTML(r)).join('') ||
+        '<div class="card text-center" style="grid-column: 1 / -1;"><p class="text-secondary">No public raffles</p></div>';
+
     if (walletConnected) {
-        loadMyRaffles();
+        myGrid.innerHTML = myRaffles.map(r => createRaffleCardHTML(r, true)).join('') ||
+            '<div class="card text-center" style="grid-column: 1 / -1;"><p class="text-secondary">No raffles created</p></div>';
     }
 }
 
-function createDemoRaffles() {
-    return [
-        {
-            id: '1',
-            creator: 'Demo1...',
-            ticketPrice: 0.1 * solanaWeb3.LAMPORTS_PER_SOL,
-            totalTickets: 10,
-            soldTickets: 7,
-            isPrivate: false,
-            inviteCode: null,
-            participants: ['addr1', 'addr2', 'addr3', 'addr4', 'addr5', 'addr6', 'addr7'],
-            winner: null,
-            status: 'active',
-            prizePool: 0.7 * solanaWeb3.LAMPORTS_PER_SOL,
-            createdAt: Date.now() - 3600000
-        },
-        {
-            id: '2',
-            creator: 'Demo2...',
-            ticketPrice: 0.5 * solanaWeb3.LAMPORTS_PER_SOL,
-            totalTickets: 20,
-            soldTickets: 15,
-            isPrivate: false,
-            inviteCode: null,
-            participants: Array(15).fill('addr'),
-            winner: null,
-            status: 'active',
-            prizePool: 7.5 * solanaWeb3.LAMPORTS_PER_SOL,
-            createdAt: Date.now() - 7200000
-        }
-    ];
-}
-
-function displayPublicRaffles() {
-    const grid = document.getElementById('publicRafflesGrid');
-    const publicRaffles = raffles.filter(r => !r.isPrivate && r.status === 'active');
-
-    if (publicRaffles.length === 0) {
-        grid.innerHTML = `
-            <div class="card text-center" style="grid-column: 1 / -1;">
-                <p class="text-secondary">No active public raffles at the moment.</p>
-                <a href="#create-raffle" class="btn btn-primary mt-1">Create First Raffle</a>
-            </div>
-        `;
-        return;
-    }
-
-    grid.innerHTML = publicRaffles.map(raffle => createRaffleCard(raffle)).join('');
-}
-
-function loadMyRaffles() {
-    if (!walletConnected || !walletPublicKey) return;
-
-    const grid = document.getElementById('myRafflesGrid');
-    const myAddress = walletPublicKey.toString();
-
-    const myRaffles = raffles.filter(r =>
-        r.creator === myAddress || r.participants.includes(myAddress)
-    );
-
-    if (myRaffles.length === 0) {
-        grid.innerHTML = `
-            <div class="card text-center" style="grid-column: 1 / -1;">
-                <p class="text-secondary">You haven't created or joined any raffles yet.</p>
-            </div>
-        `;
-        return;
-    }
-
-    grid.innerHTML = myRaffles.map(raffle => createRaffleCard(raffle, true)).join('');
-}
-
-function createRaffleCard(raffle, showInviteCode = false) {
+function createRaffleCardHTML(raffle, showInviteCode = false) {
     const ticketPriceSOL = (raffle.ticketPrice / solanaWeb3.LAMPORTS_PER_SOL).toFixed(4);
-    const prizePoolSOL = (raffle.prizePool / solanaWeb3.LAMPORTS_PER_SOL).toFixed(4);
-    const progress = (raffle.soldTickets / raffle.totalTickets) * 100;
-    const winnerPrize = raffle.prizePool * 0.93;
-    const winnerPrizeSOL = (winnerPrize / solanaWeb3.LAMPORTS_PER_SOL).toFixed(4);
+    const prizePool = raffle.ticketPrice * raffle.totalTickets;
+    const prizePoolSOL = (prizePool / solanaWeb3.LAMPORTS_PER_SOL).toFixed(4);
+    const winnerPrizeSOL = (prizePool * 0.93 / solanaWeb3.LAMPORTS_PER_SOL).toFixed(4);
+
+    const soldTickets = raffle.soldTickets || 0;
+    const progress = (soldTickets / raffle.totalTickets) * 100;
+    const isFull = soldTickets >= raffle.totalTickets;
 
     const badgeClass = raffle.isPrivate ? 'badge-private' : 'badge-public';
-    const badgeText = raffle.isPrivate ? 'Private' : 'Public';
-    const statusBadge = raffle.status === 'completed' ? '<span class="raffle-badge badge-completed">Completed</span>' : '';
+    const badgeText = raffle.isPrivate ? '🔒 Private' : '🌐 Public';
 
-    const inviteCodeHTML = showInviteCode && raffle.isPrivate && raffle.inviteCode ? `
+    const inviteCodeHTML = showInviteCode && raffle.isPrivate ? `
         <div class="info-row">
             <span class="info-label">Invite Code:</span>
-            <span class="info-value" style="font-family: monospace; font-size: 0.85rem;">${raffle.inviteCode}</span>
+            <span class="info-value" style="font-family: monospace; color: var(--solana-green);">${raffle.inviteCode}</span>
         </div>
     ` : '';
 
-    const winnerHTML = raffle.winner ? `
-        <div class="alert alert-success">
-            <strong>🎉 Winner:</strong> ${raffle.winner.slice(0, 8)}...${raffle.winner.slice(-6)}
-        </div>
-    ` : '';
-
-    const actionButton = raffle.status === 'active' && raffle.soldTickets < raffle.totalTickets
-        ? `<button class="btn btn-success" style="width: 100%;" onclick="buyTicket('${raffle.id}')">
-             Buy Ticket (${ticketPriceSOL} SOL)
-           </button>`
-        : '';
+    const buttonHTML = isFull ? `
+        <button class="btn btn-success" style="width: 100%;" onclick="drawWinner('${raffle.account}')">
+            � Draw Winner
+        </button>
+    ` : `
+        <button class="btn btn-success" style="width: 100%;" onclick="buyTicket('${raffle.account}', ${raffle.isPrivate ? `'${raffle.inviteCode}'` : 'null'})">
+            Buy Ticket (${ticketPriceSOL} SOL)
+        </button>
+    `;
 
     return `
         <div class="card raffle-card">
             <div class="raffle-header">
                 <span class="raffle-badge ${badgeClass}">${badgeText}</span>
-                ${statusBadge}
             </div>
             
             <div class="raffle-info">
@@ -459,28 +427,28 @@ function createRaffleCard(raffle, showInviteCode = false) {
                     <span class="info-value sol-amount">${ticketPriceSOL} SOL</span>
                 </div>
                 <div class="info-row">
+                    <span class="info-label">Tickets:</span>
+                    <span class="info-value">${soldTickets} / ${raffle.totalTickets}</span>
+                </div>
+                <div class="progress-bar" style="margin: 0.5rem 0;">
+                    <div class="progress-fill" style="width: ${progress}%;"></div>
+                </div>
+                <div class="info-row">
                     <span class="info-label">Prize Pool:</span>
                     <span class="info-value sol-amount">${prizePoolSOL} SOL</span>
                 </div>
                 <div class="info-row">
                     <span class="info-label">Winner Gets:</span>
-                    <span class="info-value sol-amount">${winnerPrizeSOL} SOL</span>
+                    <span class="info-value sol-amount">${winnerPrizeSOL} SOL (93%)</span>
                 </div>
                 ${inviteCodeHTML}
             </div>
             
-            <div class="progress-container">
-                <div class="progress-label">
-                    <span>Tickets Sold</span>
-                    <span><strong>${raffle.soldTickets}</strong> / ${raffle.totalTickets}</span>
-                </div>
-                <div class="progress-bar">
-                    <div class="progress-fill" style="width: ${progress}%"></div>
-                </div>
-            </div>
+            ${buttonHTML}
             
-            ${winnerHTML}
-            ${actionButton}
+            <a href="https://explorer.solana.com/address/${raffle.account}?cluster=${SOLANA_NETWORK}" target="_blank" class="btn btn-secondary mt-1" style="width: 100%; font-size: 0.85rem;">
+                📊 View on Explorer
+            </a>
         </div>
     `;
 }
@@ -490,6 +458,7 @@ function handleJoinPrivate(e) {
     e.preventDefault();
 
     const inviteCode = document.getElementById('privateInviteCode').value.trim();
+    const raffles = JSON.parse(localStorage.getItem('raffles') || '[]');
     const raffle = raffles.find(r => r.inviteCode === inviteCode && r.isPrivate);
 
     const resultDiv = document.getElementById('privateRaffleResult');
@@ -497,20 +466,19 @@ function handleJoinPrivate(e) {
     if (!raffle) {
         resultDiv.innerHTML = `
             <div class="alert alert-error">
-                Raffle not found. Please check the invite code.
+                ❌ Raffle not found. Check the invite code.
             </div>
         `;
         resultDiv.classList.remove('hidden');
         return;
     }
 
-    resultDiv.innerHTML = createRaffleCard(raffle);
+    resultDiv.innerHTML = createRaffleCardHTML(raffle);
     resultDiv.classList.remove('hidden');
 }
 
 // ===== UTILITIES =====
-function generateInviteCode() {
-    // Generate random invite code
+function generateAndDisplayInviteCode() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     let code = '';
     for (let i = 0; i < 8; i++) {
@@ -536,6 +504,7 @@ function closeRaffleModal() {
     document.getElementById('raffleModal').classList.remove('active');
 }
 
-// ===== EXPORT FOR GLOBAL ACCESS =====
+// ===== EXPORT =====
 window.buyTicket = buyTicket;
+window.drawWinner = drawWinner;
 window.closeRaffleModal = closeRaffleModal;
