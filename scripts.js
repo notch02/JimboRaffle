@@ -11,7 +11,8 @@ import {
 } from './borsh.js';
 
 // ===== CONSTANTS =====
-const RAFFLE_ACCOUNT_SIZE = 32127;
+// Account size must match Rust program (supports up to 1000 participants)
+const RAFFLE_ACCOUNT_SIZE = 32127; // Required for Vec<Pubkey> with max 1000 participants
 const RPC_ENDPOINT = SOLANA_NETWORK === 'devnet'
     ? 'https://api.devnet.solana.com'
     : 'https://api.mainnet-beta.solana.com';
@@ -93,7 +94,11 @@ function decodeRaffleStatus(reader) {
 
 // Decode Raffle struct
 function decodeRaffle(data) {
-    const reader = new BorshReader(data);
+    // Skip first 4 bytes (length prefix added by Rust program)
+    const dataLen = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24);
+
+    // Start reading from byte 4 (after length prefix)
+    const reader = new BorshReader(data.slice(4, 4 + dataLen));
 
     return {
         creator: reader.readPubkey(),
@@ -383,12 +388,18 @@ async function buyTicket(raffleAccountStr, inviteCode = null) {
         const transaction = new solanaWeb3.Transaction().add(instruction);
         const provider = getWalletProvider();
 
-        const { blockhash } = await connection.getLatestBlockhash();
+        const { blockhash } = await connection.getLatestBlockhash('confirmed');
         transaction.recentBlockhash = blockhash;
         transaction.feePayer = walletPublicKey;
 
         const signed = await provider.signTransaction(transaction);
-        const txid = await connection.sendRawTransaction(signed.serialize());
+
+        // Send with proper options to avoid blockhash errors
+        const txid = await connection.sendRawTransaction(signed.serialize(), {
+            skipPreflight: false,
+            preflightCommitment: 'confirmed',
+            maxRetries: 3
+        });
 
         console.log('📤 Tx:', txid);
         await connection.confirmTransaction(txid, 'confirmed');
