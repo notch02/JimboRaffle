@@ -187,10 +187,10 @@
                         <h4>Prize Distribution</h4>
                         <div class="distribution-visual">
                             <div class="dist-bar">
-                                <div class="dist-winner" style="width: 93%;">
+                                <div class="dist-winner" style="width: 70%;">
                                     <span>Winner: 93%</span>
                                 </div>
-                                <div class="dist-platform" style="width: 7%;">
+                                <div class="dist-platform" style="width: 30%;">
                                     <span>Platform: 7%</span>
                                 </div>
                             </div>
@@ -236,7 +236,7 @@
                 <div class="footer-links">
                     <a href="#" class="footer-link">About</a>
                     <a href="#how-it-works" class="footer-link">How It Works</a>
-                    <a href="#" class="footer-link">FAQ</a>
+
                     <a href="https://solana.com" target="_blank" class="footer-link">Solana</a>
                 </div>
                 <p class="footer-text">Built on Solana • Powered by Web3 • 7% Platform Fee</p>
@@ -244,6 +244,29 @@
             </div>
         </div>
     </footer>
+    <!-- Wallet Selection Modal -->
+    <div id="walletModal" class="modal">
+        <div class="modal-content" style="max-width: 400px;">
+            <button class="modal-close" onclick="closeWalletModal()">&times;</button>
+            <h2 style="text-align: center; margin-bottom: 2rem;">Connect Wallet</h2>
+            <div style="display: flex; flex-direction: column; gap: 1rem;">
+                <button class="wallet-option" onclick="connectSpecificWallet('phantom')">
+                    <div class="wallet-icon">👻</div>
+                    <div class="wallet-info">
+                        <div class="wallet-name">Phantom</div>
+                        <div class="wallet-desc">Most popular Solana wallet</div>
+                    </div>
+                </button>
+                <button class="wallet-option" onclick="connectSpecificWallet('solflare')">
+                    <div class="wallet-icon">🔥</div>
+                    <div class="wallet-info">
+                        <div class="wallet-name">Solflare</div>
+                        <div class="wallet-desc">Secure & feature-rich</div>
+                    </div>
+                </button>
+            </div>
+        </div>
+    </div>
 
     <!-- Raffle Detail Modal -->
     <div id="raffleModal" class="modal">

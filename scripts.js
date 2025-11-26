@@ -5,6 +5,7 @@ import { SOLANA_NETWORK, COMMISSION_WALLET, COMMISSION_PERCENTAGE, PROGRAM_ID } 
 import {
     encodeCreateRaffle,
     encodeBuyTicket,
+    encodeCloseRaffle,
     encodeDrawWinner,
     stringToInviteCode,
     inviteCodeToString
@@ -132,19 +133,36 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ===== WALLET FUNCTIONS =====
 async function connectWallet() {
-    try {
-        const provider = getWalletProvider();
-        if (!provider) {
-            alert('Please install Phantom wallet!\n\nhttps://phantom.app');
-            window.open('https://phantom.app/', '_blank');
-            return;
-        }
+    document.getElementById('walletModal').classList.add('active');
+}
 
+async function connectSpecificWallet(walletType) {
+    try {
+        let provider;
+
+        if (walletType === 'phantom') {
+            if (!window.solana?.isPhantom) {
+                alert('Phantom wallet not found!\n\nInstall: https://phantom.app');
+                window.open('https://phantom.app/', '_blank');
+                return;
+            }
+            provider = window.solana;
+        } else if (walletType === 'solflare') {
+            if (!window.solflare?.isSolflare) {
+                alert('Solflare wallet not found!\n\nInstall: https://solflare.com');
+                window.open('https://solflare.com/', '_blank');
+                return;
+            }
+            provider = window.solflare;
+        }
+        // Solflare returns publicKey directly, Phantom returns it in resp
         const resp = await provider.connect();
-        walletPublicKey = resp.publicKey;
+        walletPublicKey = resp.publicKey || provider.publicKey;
         walletConnected = true;
+        window.currentWalletProvider = provider;
 
         console.log('✅ Wallet:', walletPublicKey.toString());
+        closeWalletModal();
         updateWalletUI();
         loadRaffles();
     } catch (error) {
@@ -153,13 +171,18 @@ async function connectWallet() {
     }
 }
 
+function closeWalletModal() {
+    document.getElementById('walletModal').classList.remove('active');
+}
+
 async function disconnectWallet() {
     try {
-        const provider = getWalletProvider();
+        const provider = window.currentWalletProvider || getWalletProvider();
         if (provider) await provider.disconnect();
 
         walletConnected = false;
         walletPublicKey = null;
+        window.currentWalletProvider = null;
         updateWalletUI();
         loadRaffles();
     } catch (error) {
@@ -168,6 +191,7 @@ async function disconnectWallet() {
 }
 
 function getWalletProvider() {
+    if (window.currentWalletProvider) return window.currentWalletProvider;
     if (window.solana?.isPhantom) return window.solana;
     if (window.solflare?.isSolflare) return window.solflare;
     return null;
@@ -482,6 +506,41 @@ async function drawWinner(raffleAccountStr) {
         alert(`❌ Failed:\n\n${error.message}`);
     }
 }
+//closeraffle
+async function closeRaffleOnChain(raffleAddress) {
+    if (!walletConnected) { alert('⚠️ Connect wallet first!'); return; }
+    try {
+        const raffle = await fetchRaffleByAddress(raffleAddress);
+        if (!raffle) { alert('❌ Raffle not found'); return; }
+        if (raffle.status !== 'Completed') { alert('❌ Must be completed'); return; }
+        if (raffle.creator.toString() !== walletPublicKey.toString()) { alert('❌ Only creator'); return; }
+
+        const instruction = new solanaWeb3.TransactionInstruction({
+            keys: [
+                { pubkey: walletPublicKey, isSigner: true, isWritable: true },
+                { pubkey: new solanaWeb3.PublicKey(raffleAddress), isSigner: false, isWritable: true },
+            ],
+            programId: programId,
+            data: encodeCloseRaffle(),
+        });
+
+        const tx = new solanaWeb3.Transaction().add(instruction);
+        const provider = getWalletProvider();
+        const { blockhash } = await connection.getLatestBlockhash();
+        tx.recentBlockhash = blockhash;
+        tx.feePayer = walletPublicKey;
+
+        const signed = await provider.signTransaction(tx);
+        const txid = await connection.sendRawTransaction(signed.serialize());
+        await connection.confirmTransaction(txid);
+
+        alert(`✅ Rent recovered!\n\nTx: ${txid.slice(0, 8)}...`);
+        setTimeout(() => loadRaffles(), 2000);
+    } catch (error) {
+        alert(`❌ ${error.message}`);
+    }
+}
+
 
 // ===== LOAD RAFFLES =====
 async function loadRaffles() {
@@ -552,6 +611,7 @@ function createRaffleCardHTML(raffle, showInviteCode = false) {
         <button class="btn btn-secondary" style="width: 100%;" disabled>
             Completed
         </button>
+        ${showInviteCode ? `<button class="btn btn-primary mt-1" style="width: 100%;" onclick="closeRaffleOnChain('${raffle.address}')">🔒 Close & Recover Rent</button>` : ''}
     ` : isFull ? `
         <button class="btn btn-success" style="width: 100%;" onclick="drawWinner('${raffle.address}')">
             🎲 Draw Winner
@@ -661,4 +721,7 @@ function closeRaffleModal() {
 // ===== EXPORT TO WINDOW =====
 window.buyTicket = buyTicket;
 window.drawWinner = drawWinner;
+window.closeRaffleOnChain = closeRaffleOnChain;
 window.closeRaffleModal = closeRaffleModal;
+window.connectSpecificWallet = connectSpecificWallet;
+window.closeWalletModal = closeWalletModal;

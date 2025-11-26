@@ -89,6 +89,16 @@ export function encodeDrawWinner() {
     return writer.toBuffer();
 }
 
+// Instruction: CloseRaffle
+export function encodeCloseRaffle() {
+    const writer = new BorshWriter();
+
+    // Instruction discriminator (3 = CloseRaffle)
+    writer.writeU8(3);
+
+    return writer.toBuffer();
+}
+
 // Helper: Generate invite code from string
 export function stringToInviteCode(str) {
     const encoder = new TextEncoder();
